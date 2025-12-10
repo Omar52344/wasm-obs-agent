@@ -1,0 +1,32 @@
+[package]
+name = "wasm-obs-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Biblioteca wasmtime oficial (la usas, no la modificas)
+wasmtime = "20.0"
+
+# Para telemetría async
+tokio = { version = "1.35", features = ["full"] }
+
+# Para exportar a OpenTelemetry
+opentelemetry = "0.24"
+opentelemetry_sdk = "0.24"
+opentelemetry-otlp = { version = "0.17", features = ["grpc-tonic"] }
+
+# Para serializar datos
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Para IDs únicos
+uuid = { version = "1.8", features = ["v4", "serde"] }
+
+# Para comunicación entre threads
+crossbeam-channel = "0.5"
+
+# Para locks eficientes
+parking_lot = "0.12"
+
+[dev-dependencies]
+wat = "1.243.0"
