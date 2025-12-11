@@ -1,10 +1,10 @@
 pub mod instrument;
 pub mod wrapper;
-
+pub mod exporter; 
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
 use std::sync::Arc;
-
+use tokio::sync::mpsc::UnboundedSender;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmSpan {
     pub id: Uuid,
@@ -30,11 +30,11 @@ pub trait WasmObserver: Send + Sync {
 
 pub struct TelemetryObserver {
     runtime_id: Uuid,
-    sender: crossbeam_channel::Sender<WasmSpan>,
+    sender: UnboundedSender<WasmSpan>, // ← ahora async
 }
 
 impl TelemetryObserver {
-    pub fn new(sender: crossbeam_channel::Sender<WasmSpan>) -> Arc<dyn WasmObserver> {
+    pub fn new(sender: UnboundedSender<WasmSpan>) -> Arc<dyn WasmObserver> {
         Arc::new(Self {
             runtime_id: Uuid::new_v4(),
             sender,

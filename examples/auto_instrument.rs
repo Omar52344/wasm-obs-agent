@@ -1,9 +1,11 @@
 use wasmtime::{Engine, Module, Store}; // ← Store estaba ausente
-use wasm_obs_agent::{TelemetryObserver, WasmObserver};
+use wasm_obs_agent::{TelemetryObserver, WasmObserver, exporter::run_otlp_exporter}; 
 use crossbeam_channel;
 use wasm_obs_agent::wrapper::ObservedInstance;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+// Añade la macro tokio::main para permitir main async
+#[tokio::main] 
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Demo: Auto-instrumentación sin cambiar el Wasm");
 
     // 1. Setup normal de wasmtime
@@ -27,21 +29,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut store = Store::new(&engine, ());
 
     // 2. Canal y observer
-    let (sender, receiver) = crossbeam_channel::unbounded();
+    // Usa tokio::sync::mpsc::unbounded_channel() y el import necesario
+    use tokio::sync::mpsc; 
+    let (sender, receiver) = mpsc::unbounded_channel();
     let observer = TelemetryObserver::new(sender);
 
     // 3. Instancia instrumentada
+    // Asumiendo que run_otlp_exporter está en el módulo exporter de tu crate:
+    use wasm_obs_agent::exporter::run_otlp_exporter; 
     let instance = ObservedInstance::new(&mut store, &module, observer)?;
-
+    
+    tokio::spawn(run_otlp_exporter(
+        receiver,
+        "http://localhost:4317".to_string(), // tu collector OTLP
+    ));
+    
     // 4. Background telemetry
+    // WARNING: Esto consumirá el 'receiver' del canal secundario. 
+    // Si usas el exportador OTLP arriba, este hilo ya no recibirá mensajes.
+    /* 
     std::thread::spawn(move || {
-        for span in receiver {
+        for span in receiver { // 'receiver' es ahora un UnboundedReceiver<WasmSpan> de tokio
             println!("[📡 TELEMETRY] {}: {} ns", 
                 span.function_name,
                 span.end_time_ns.unwrap_or(0) - span.start_time_ns
             );
         }
     });
+    */
 
     // 5. Uso normal
     let add = instance.get_func(&mut store, "add").unwrap();
@@ -54,5 +69,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✖️ multiply(4,7) = {}", results[0].unwrap_i32());
 
     println!("\n✅ ¡Ninguna función fue modificada manualmente!");
+    
+    // Da tiempo al exportador async para enviar los spans antes de que main termine.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
     Ok(())
 }
