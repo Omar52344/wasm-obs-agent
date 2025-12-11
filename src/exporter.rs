@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use crate::WasmSpan;
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::sync::oneshot; 
+
 pub async fn run_otlp_exporter(
     mut rx: mpsc::UnboundedReceiver<WasmSpan>,
     endpoint: String,
@@ -24,62 +25,81 @@ pub async fn run_otlp_exporter(
         KeyValue::new("service.name", "wasm-obs-agent"), // 
         KeyValue::new("environment", "development"),
     ]);
+
+    println!("🔍 Paso 1: Resource creada");  // Nuevo log
     let exporter_builder = opentelemetry_otlp::new_exporter()
-        .tonic() 
+        .http()
         .with_endpoint(&endpoint);
-       
-    // Instala el exportador batch asíncrono para Tokio
-    opentelemetry_otlp::new_pipeline()
+    println!("🔍 Paso 2: Exporter builder creado");  
+
+    let pipeline = opentelemetry_otlp::new_pipeline()
         .tracing()
-        .with_exporter(exporter_builder)
-        .with_trace_config(
-            sdktrace::Config::default()
-                .with_resource(resource)
-        )
-        .install_batch(Tokio)
-        .expect("OTLP instalado");
-    
+        .with_exporter(exporter_builder);
+
+    println!("🔍 Paso 3: Pipeline básica creada");  // Nuevo log
+    // Instala el exportador batch asíncrono para Tokio
+    let configured_pipeline = pipeline
+            .with_trace_config(sdktrace::config().with_resource(resource))
+            .with_batch_config(
+                sdktrace::BatchConfigBuilder::default()
+                    .with_scheduled_delay(Duration::from_millis(500))
+                    .with_max_export_batch_size(512)
+                    .with_max_queue_size(2048)
+                    .build()
+            );
+
+    println!("🔍 Paso 4: Config batch y trace agregada");  // Nuevo log
+    let install_result = configured_pipeline.install_batch(Tokio);
+
+    match install_result {
+        Ok(_) => println!("🔍 Paso 5: OTLP batch instalado exitosamente"),
+        Err(e) => {
+            eprintln!("❌ Error instalando OTLP pipeline: {:?}", e);
+            return;  // Salir si falla
+        }
+    }
+
     let tracer = global::tracer("wasm-obs-agent");
+    println!("🔍 Paso 6: Tracer obtenido");  // Nuevo log
     if ready_tx.send(()).is_err() {
         eprintln!("⚠️ Error al enviar señal de listo al main.");
         return; // Salir si main ya cerró la espera
     }
+    println!("🔍 Paso 7: Ready enviado");  // Nuevo log
 
     while let Some(span) = rx.recv().await {
         println!("📡 Procesando span para función: {}", span.function_name);
 
-        let start_time = UNIX_EPOCH + Duration::from_nanos(span.start_time_ns);
-        let end_time = span.end_time_ns
-            .map(|end_ns| UNIX_EPOCH + Duration::from_nanos(end_ns))
-            .unwrap_or(start_time); 
-        if span.end_time_ns.unwrap_or(0) == 0 {
-            println!("⚠️ Ignorando span incompleto para {}", span.function_name);
-            continue; // Saltar al siguiente elemento del bucle
-        }    
+        if let Some(end_ns) = span.end_time_ns {
+            if end_ns <= span.start_time_ns {
+                println!("⚠️ Ignorando span con duración inválida (<=0) para {}", span.function_name);
+                continue;
+            }
 
-        let mut builder = SpanBuilder::from_name(format!("wasm::{}", span.function_name));
-        builder.span_kind = Some(SpanKind::Internal);
-        builder.start_time = Some(start_time);
-        builder.end_time = Some(end_time);
-        
-        builder.attributes = Some(vec![
-            KeyValue::new("wasm.runtime_id", span.runtime_id.to_string()),
-        ]);
+            let start_time = UNIX_EPOCH + Duration::from_nanos(span.start_time_ns);
+            let end_time = UNIX_EPOCH + Duration::from_nanos(end_ns);
 
-        println!("📤 Enviando span: {} ({} -> {})", 
-            span.function_name, 
-            span.start_time_ns, 
-            span.end_time_ns.unwrap_or(0)
-        );
+            let mut builder = SpanBuilder::from_name(format!("wasm::{}", span.function_name));
+            builder.span_kind = Some(SpanKind::Internal);
+            builder.start_time = Some(start_time);
+            builder.end_time = Some(end_time);
+            
+            builder.attributes = Some(vec![
+                KeyValue::new("wasm.runtime_id", span.runtime_id.to_string()),
+                // Opcional: agrega más attrs, e.g., KeyValue::new("status", format!("{:?}", span.status)),
+            ]);
 
-        // Finaliza el span para que sea enviado por el batch exporter
-        tracer.build(builder).end();
+            println!("📤 Enviando span completo: {} (duración: {} ns)", 
+                span.function_name, 
+                end_ns - span.start_time_ns
+            );
+
+            tracer.build(builder).end();
+        } else {
+            println!("⚠️ Ignorando span incompleto (sin end_time_ns) para {}", span.function_name);
+        }
     }
     
-    // ELIMINA TODA LA LÓGICA DE APAGADO MANUAL DE HILOS
-
-    // Llama al apagado global aquí, después de que todos los spans han sido procesados.
-    // El 'await' en main esperará a que esta función termine.
-    opentelemetry::global::shutdown_tracer_provider();
+    global::shutdown_tracer_provider();
     println!("✅ Shutdown de OTLP completado dentro del exporter.");
 }

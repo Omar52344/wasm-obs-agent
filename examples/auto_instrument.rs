@@ -41,17 +41,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (ready_tx, ready_rx) = oneshot::channel();
     let instance = ObservedInstance::new(&mut store, &module, observer)?;
     
-     let endpoint_url = "http://localhost:4317".to_string(); 
+    let endpoint_url = "http://127.0.0.1:14268".to_string();
     // Iniciamos el exportador OTLP en una tarea de Tokio separada
-   let exporter_handle = tokio::task::spawn_blocking(move || {
-        // Ejecutamos la función asíncrona dentro de spawn_blocking
-        // Tienes que usar tokio::runtime::Handle para ejecutar la tarea async aquí
-        tokio::runtime::Handle::current().block_on(run_otlp_exporter(
+   let exporter_handle = tokio::spawn(run_otlp_exporter(
             receiver,
             endpoint_url,
             ready_tx,
-        ))
-    });
+        ));
     ready_rx.await.expect("No se pudo sincronizar con la tarea del exportador.");
     println!("🛠️ Exportador OTLP sincronizado y listo. Generando spans...");
     // 4. Uso normal del Wasm
@@ -71,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n✅ ¡Ninguna función fue modificada manualmente!");
     
     // --- CIERRE ROBUSTO ---
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+   tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     // Forzamos la caída de las variables que tienen copias del 'sender' ANTES del .await:
     drop(instance); 
     drop(store);    
