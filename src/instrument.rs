@@ -74,7 +74,7 @@ where
                 name.clone(),
             );
             instrumented_funcs.insert(name.clone(), instrumented);
-            println!("✅ Función '{}' instrumentada automáticamente", name);
+            //println!("✅ Función '{}' instrumentada automáticamente", name);
         }
     }
 
