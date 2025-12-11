@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (ready_tx, ready_rx) = oneshot::channel();
     let instance = ObservedInstance::new(&mut store, &module, observer)?;
     
-    let endpoint_url = "http://127.0.0.1:14268".to_string();
+   let endpoint_url = "http://127.0.0.1:4318/v1/traces".to_string();
     // Iniciamos el exportador OTLP en una tarea de Tokio separada
    let exporter_handle = tokio::spawn(run_otlp_exporter(
             receiver,
