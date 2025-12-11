@@ -42,6 +42,12 @@ impl TelemetryObserver {
     }
 }
 
+impl Drop for TelemetryObserver {
+    fn drop(&mut self) {
+        println!("🗑️ TelemetryObserver eliminado (runtime_id: {})", self.runtime_id);
+    }
+}
+
 impl WasmObserver for TelemetryObserver {
     fn on_func_enter(&self, _runtime_id: Uuid, func_name: &str) {
         let span = WasmSpan {

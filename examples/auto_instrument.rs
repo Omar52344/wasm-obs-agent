@@ -1,9 +1,9 @@
-use wasmtime::{Engine, Module, Store}; // ← Store estaba ausente
-use wasm_obs_agent::{TelemetryObserver, WasmObserver, exporter::run_otlp_exporter}; 
-use crossbeam_channel;
+use wasmtime::{Engine, Module, Store};
+use wasm_obs_agent::{TelemetryObserver, WasmObserver};
 use wasm_obs_agent::wrapper::ObservedInstance;
+use tokio::sync::mpsc;
+use wasm_obs_agent::exporter::run_otlp_exporter; // Asegúrate de que esta importación sea correcta
 
-// Añade la macro tokio::main para permitir main async
 #[tokio::main] 
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Demo: Auto-instrumentación sin cambiar el Wasm");
@@ -29,36 +29,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut store = Store::new(&engine, ());
 
     // 2. Canal y observer
-    // Usa tokio::sync::mpsc::unbounded_channel() y el import necesario
-    use tokio::sync::mpsc; 
+    // Creamos el canal MPSC (Multi-Producer, Single-Consumer)
     let (sender, receiver) = mpsc::unbounded_channel();
-    let observer = TelemetryObserver::new(sender);
+    let observer = TelemetryObserver::new(sender.clone()); // Usamos .clone() para mantener el 'sender' original vivo
 
     // 3. Instancia instrumentada
-    // Asumiendo que run_otlp_exporter está en el módulo exporter de tu crate:
-    use wasm_obs_agent::exporter::run_otlp_exporter; 
     let instance = ObservedInstance::new(&mut store, &module, observer)?;
     
-    tokio::spawn(run_otlp_exporter(
+    // Iniciamos el exportador OTLP en una tarea de Tokio separada
+    let exporter_handle = tokio::spawn(run_otlp_exporter(
         receiver,
         "http://localhost:4317".to_string(), // tu collector OTLP
     ));
     
-    // 4. Background telemetry
-    // WARNING: Esto consumirá el 'receiver' del canal secundario. 
-    // Si usas el exportador OTLP arriba, este hilo ya no recibirá mensajes.
-    /* 
-    std::thread::spawn(move || {
-        for span in receiver { // 'receiver' es ahora un UnboundedReceiver<WasmSpan> de tokio
-            println!("[📡 TELEMETRY] {}: {} ns", 
-                span.function_name,
-                span.end_time_ns.unwrap_or(0) - span.start_time_ns
-            );
-        }
-    });
-    */
-
-    // 5. Uso normal
+    // 4. Uso normal del Wasm
     let add = instance.get_func(&mut store, "add").unwrap();
     let mut results = [wasmtime::Val::I32(0)];
     add.call(&mut store, &[wasmtime::Val::I32(5), wasmtime::Val::I32(3)], &mut results)?;
@@ -68,10 +52,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     multiply.call(&mut store, &[wasmtime::Val::I32(4), wasmtime::Val::I32(7)], &mut results)?;
     println!("✖️ multiply(4,7) = {}", results[0].unwrap_i32());
 
+    /*while 1==1 {
+        println!("✅ último span exportado");
+        let multiply = instance.get_func(&mut store, "multiply").unwrap();
+        multiply.call(&mut store, &[wasmtime::Val::I32(9), wasmtime::Val::I32(12)], &mut results)?;
+        println!("✖️ multiply(9,12) = {}", results[0].unwrap_i32());
+    }*/
+    
+
     println!("\n✅ ¡Ninguna función fue modificada manualmente!");
     
-    // Da tiempo al exportador async para enviar los spans antes de que main termine.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // --- Solución al error "oneshot canceled" ---
+    
+    // A. Cerramos el canal de envío (sender). 
+    // Esto es vital. Le indica al 'receiver' en 'run_otlp_exporter' que ya no vendrán más mensajes.
+    // drop(observer); // <-- ELIMINADO: 'observer' ya fue movido al crear 'instance'.
+    drop(instance);   // Liberamos la instancia (y sus handles a funciones)
+    drop(sender);     // Liberamos el sender de main
+    drop(store);      // Liberamos el Store (y las closures con los clones del sender) 
 
+    match exporter_handle.await {
+        Ok(_) => println!("✅ Exportador OTLP finalizado limpiamente."),
+        Err(e) => eprintln!("⚠️ Error esperando la tarea del exportador: {}", e),
+    }
+
+    // B. Esperamos a que la tarea del exportador termine su bucle 'while let Some(span)' 
+    // y vacíe su buffer de OpenTelemetry.
+    //exporter_handle.await?;
+  
+    println!("🛑 Exportador cerrado. Adiós.");
+    // C. El shutdown ya fue manejado internamente por el exportador con un timeout seguro.
+    // No llamamos a shutdown_tracer_provider() aquí para evitar bloqueos si el collector falla.
+    println!("✅ Programa finalizado.");
     Ok(())
 }
