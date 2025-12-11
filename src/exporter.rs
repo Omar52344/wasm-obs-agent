@@ -24,18 +24,19 @@ pub async fn run_otlp_exporter(
         KeyValue::new("service.name", "wasm-obs-agent"), // 
         KeyValue::new("environment", "development"),
     ]);
-    let exporter = opentelemetry_otlp::new_exporter()
-        .tonic()
+    let exporter_builder = opentelemetry_otlp::new_exporter()
+        .tonic() 
         .with_endpoint(&endpoint);
+       
     // Instala el exportador batch asíncrono para Tokio
     opentelemetry_otlp::new_pipeline()
         .tracing()
-        .with_exporter(exporter)
+        .with_exporter(exporter_builder)
         .with_trace_config(
             sdktrace::Config::default()
                 .with_resource(resource)
         )
-        .install_simple() // <-- Volvemos a simple
+        .install_batch(Tokio)
         .expect("OTLP instalado");
     
     let tracer = global::tracer("wasm-obs-agent");

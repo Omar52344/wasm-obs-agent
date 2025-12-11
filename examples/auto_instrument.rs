@@ -4,8 +4,11 @@ use wasm_obs_agent::wrapper::ObservedInstance;
 use tokio::sync::mpsc;
 use wasm_obs_agent::exporter::run_otlp_exporter; 
 use tokio::sync::oneshot;
+use env_logger;
+
 #[tokio::main] 
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+     env_logger::init(); 
     println!("🚀 Demo: Auto-instrumentación sin cambiar el Wasm");
 
     // 1. Setup normal de wasmtime
@@ -38,14 +41,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (ready_tx, ready_rx) = oneshot::channel();
     let instance = ObservedInstance::new(&mut store, &module, observer)?;
     
-    
+     let endpoint_url = "http://localhost:4317".to_string(); 
     // Iniciamos el exportador OTLP en una tarea de Tokio separada
-   let exporter_handle = tokio::spawn(run_otlp_exporter(
-        receiver,
-        // Usamos localhost ahora que hemos verificado el mapeo de puertos y telnet
-        "http://localhost:4318".to_string(), 
-        ready_tx
-    ));
+   let exporter_handle = tokio::task::spawn_blocking(move || {
+        // Ejecutamos la función asíncrona dentro de spawn_blocking
+        // Tienes que usar tokio::runtime::Handle para ejecutar la tarea async aquí
+        tokio::runtime::Handle::current().block_on(run_otlp_exporter(
+            receiver,
+            endpoint_url,
+            ready_tx,
+        ))
+    });
     ready_rx.await.expect("No se pudo sincronizar con la tarea del exportador.");
     println!("🛠️ Exportador OTLP sincronizado y listo. Generando spans...");
     // 4. Uso normal del Wasm
