@@ -22,15 +22,12 @@ pub async fn run_otlp_exporter(
         .with_endpoint(&endpoint);
     
     // ... (configuración del pipeline)
-    println!("🔍 Exporter: Instalando pipeline...");
-    println!("🔍 Exporter: Instalando pipeline...");
     // Usamos install_simple para evitar problemas de hilos de fondo/batching en apps cortas
     opentelemetry_otlp::new_pipeline()
         .tracing()
         .with_exporter(exporter)
         .install_simple() 
         .expect("OTLP instalado");
-    println!("🔍 Exporter: Pipeline instalado (simple). Iniciando recepción.");
 
     let tracer = global::tracer("wasm-obs-agent");
 
@@ -54,7 +51,6 @@ pub async fn run_otlp_exporter(
         
         tracer.build(builder);
     }
-    println!("🔍 Exporter: Loop finalizado (canal cerrado). Iniciando shutdown safe.");
 
     // Ejecutamos shutdown en un thread dedicado para no bloquear el runtime de Tokio
     // y poder aplicar un timeout manual si el OTLP collector no responde.
