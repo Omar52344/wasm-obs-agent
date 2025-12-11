@@ -1,44 +1,60 @@
 use opentelemetry::{
     global,
-    trace::{SpanBuilder, SpanKind, Tracer},
+    trace::{SpanBuilder, SpanKind, Tracer,Span},
     KeyValue,
 };
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::runtime::Tokio;
+use opentelemetry_sdk::{
+    runtime::Tokio,
+    Resource, // <-- Importa esto
+    trace as sdktrace,
+};
 use tokio::sync::mpsc;
 use crate::WasmSpan;
-use std::time::{Duration, UNIX_EPOCH}; // Importa Duration y UNIX_EPOCH
-
+use std::time::{Duration, UNIX_EPOCH};
+use tokio::sync::oneshot; 
 pub async fn run_otlp_exporter(
     mut rx: mpsc::UnboundedReceiver<WasmSpan>,
     endpoint: String,
+    ready_tx: oneshot::Sender<()>, 
 ) {
-    // ... (la configuración del pipeline es correcta)
     println!("🛠️ Exporter task iniciada");
-    
-    println!("🛠️ Configurando exportador OTLP...");
+    println!("🛠️ Configurando exportador OTLP a: {}", endpoint);
+    let resource = Resource::new(vec![
+        KeyValue::new("service.name", "wasm-obs-agent"), // 
+        KeyValue::new("environment", "development"),
+    ]);
     let exporter = opentelemetry_otlp::new_exporter()
         .tonic()
         .with_endpoint(&endpoint);
-    
-    // ... (configuración del pipeline)
-    // Usamos install_simple para evitar problemas de hilos de fondo/batching en apps cortas
+    // Instala el exportador batch asíncrono para Tokio
     opentelemetry_otlp::new_pipeline()
         .tracing()
         .with_exporter(exporter)
-        .install_simple() 
+        .with_trace_config(
+            sdktrace::Config::default()
+                .with_resource(resource)
+        )
+        .install_simple() // <-- Volvemos a simple
         .expect("OTLP instalado");
-
+    
     let tracer = global::tracer("wasm-obs-agent");
+    if ready_tx.send(()).is_err() {
+        eprintln!("⚠️ Error al enviar señal de listo al main.");
+        return; // Salir si main ya cerró la espera
+    }
 
     while let Some(span) = rx.recv().await {
-        // ... (código existente)
-        // Usa UNIX_EPOCH para convertir nanosegundos a SystemTime
+        println!("📡 Procesando span para función: {}", span.function_name);
+
         let start_time = UNIX_EPOCH + Duration::from_nanos(span.start_time_ns);
-        
         let end_time = span.end_time_ns
             .map(|end_ns| UNIX_EPOCH + Duration::from_nanos(end_ns))
             .unwrap_or(start_time); 
+        if span.end_time_ns.unwrap_or(0) == 0 {
+            println!("⚠️ Ignorando span incompleto para {}", span.function_name);
+            continue; // Saltar al siguiente elemento del bucle
+        }    
 
         let mut builder = SpanBuilder::from_name(format!("wasm::{}", span.function_name));
         builder.span_kind = Some(SpanKind::Internal);
@@ -48,28 +64,21 @@ pub async fn run_otlp_exporter(
         builder.attributes = Some(vec![
             KeyValue::new("wasm.runtime_id", span.runtime_id.to_string()),
         ]);
-        
-        tracer.build(builder);
+
+        println!("📤 Enviando span: {} ({} -> {})", 
+            span.function_name, 
+            span.start_time_ns, 
+            span.end_time_ns.unwrap_or(0)
+        );
+
+        // Finaliza el span para que sea enviado por el batch exporter
+        tracer.build(builder).end();
     }
-
-    // Ejecutamos shutdown en un thread dedicado para no bloquear el runtime de Tokio
-    // y poder aplicar un timeout manual si el OTLP collector no responde.
-    let shutdown_handle = std::thread::spawn(|| {
-        opentelemetry::global::shutdown_tracer_provider();
-    });
-
-    // Esperamos máximo 3 segundos para el shutdown
-    let timeout = Duration::from_secs(3);
-    let start = std::time::Instant::now();
     
-    loop {
-        if shutdown_handle.is_finished() {
-            break;
-        }
-        if start.elapsed() > timeout {
-            eprintln!("⚠️ Warning: OTLP exporter shutdown timed out.");
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // ELIMINA TODA LA LÓGICA DE APAGADO MANUAL DE HILOS
+
+    // Llama al apagado global aquí, después de que todos los spans han sido procesados.
+    // El 'await' en main esperará a que esta función termine.
+    opentelemetry::global::shutdown_tracer_provider();
+    println!("✅ Shutdown de OTLP completado dentro del exporter.");
 }

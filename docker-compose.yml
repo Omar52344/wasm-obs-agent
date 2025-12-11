@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    # Mapeamos los puertos que necesitamos acceder desde nuestra máquina host
+    ports:
+      - "16686:16686" # UI Web de Jaeger
+      - "4317:4317"   # OTLP gRPC (para tu app Rust)
+      - "4318:4318"   # OTLP HTTP
+    environment:
+      # Habilitamos explícitamente el receptor OTLP
+      COLLECTOR_OTLP_ENABLED: "true"
